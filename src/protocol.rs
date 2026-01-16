@@ -16,7 +16,7 @@
 //! 3. Server validates the request and connects to the appropriate backend
 //! 4. Bidirectional data flow begins
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use iroh::{endpoint::Connection, protocol::{AcceptError, ProtocolHandler}};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -151,9 +151,9 @@ impl ProtocolHandler for TcpTunnelProtocol {
 
                 // Close the connection with an error
                 connection.close(1u32.into(), b"unauthorized");
-                return Err(AcceptError::custom(format!(
-                    "Unauthorized endpoint: {}",
-                    remote_id_str
+                return Err(AcceptError::from_err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Unauthorized endpoint: {}", remote_id_str),
                 )));
             }
 
