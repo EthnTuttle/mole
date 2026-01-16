@@ -1,15 +1,15 @@
-//! Mole - Secure SSH tunneling over Iroh
+//! Mole - Secure TCP tunneling over Iroh
 //!
-//! Mole creates encrypted peer-to-peer tunnels to access SSH on remote machines
-//! without exposing ports to the public internet. All connections are:
+//! Mole creates encrypted peer-to-peer tunnels to access TCP services on remote
+//! machines without exposing ports to the public internet. All connections are:
 //! - End-to-end encrypted using QUIC/TLS
 //! - Authenticated using Ed25519 public keys
 //! - Direct when possible, relayed when necessary
 
+mod client;
 mod protocol;
 mod security;
 mod server;
-mod client;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -17,7 +17,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser)]
 #[command(name = "mole")]
-#[command(about = "Secure SSH tunneling over Iroh - access your machine from anywhere")]
+#[command(about = "Secure TCP tunneling over Iroh - access any service from anywhere")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -30,11 +30,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run as a server on the host machine (accepts SSH tunnel connections)
+    /// Run as a server on the host machine (accepts tunnel connections)
     Serve {
-        /// SSH server address to tunnel to (default: 127.0.0.1:22)
-        #[arg(short, long, default_value = "127.0.0.1:22")]
-        ssh_addr: String,
+        /// Tunnel specifications: name:host:port[:local_port]
+        /// Examples: ssh:127.0.0.1:22:2222, postgres:127.0.0.1:5432
+        /// If no tunnels specified, defaults to ssh:127.0.0.1:22:2222
+        #[arg(short, long = "tunnel", value_name = "SPEC")]
+        tunnels: Vec<String>,
 
         /// Path to authorized keys file (node IDs that can connect)
         #[arg(short, long)]
@@ -45,14 +47,15 @@ enum Commands {
         ticket: bool,
     },
 
-    /// Connect to a remote mole server and start SSH tunnel
+    /// Connect to a remote mole server and start tunnels
     Connect {
         /// Connection ticket from the server
         ticket: String,
 
-        /// Local port to listen on for SSH connections
-        #[arg(short, long, default_value = "2222")]
-        local_port: u16,
+        /// Tunnel bindings: name:local_port (e.g., ssh:2222, postgres:5432)
+        /// If not specified, uses defaults from common tunnel names
+        #[arg(short, long = "tunnel", value_name = "BINDING")]
+        tunnels: Vec<String>,
     },
 
     /// Manage authorized keys
@@ -108,15 +111,16 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Serve {
-            ssh_addr,
+            tunnels,
             authorized_keys,
             ticket,
         } => {
-            server::run(ssh_addr, authorized_keys, ticket).await?;
+            server::run(tunnels, authorized_keys, ticket).await?;
         }
 
-        Commands::Connect { ticket, local_port } => {
-            client::run(ticket, local_port).await?;
+        Commands::Connect { ticket, tunnels } => {
+            let bindings = parse_tunnel_bindings(&tunnels)?;
+            client::run(ticket, bindings).await?;
         }
 
         Commands::Keys { action } => match action {
@@ -140,6 +144,68 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse tunnel bindings from command line
+/// Format: name:local_port or just name (uses default port)
+fn parse_tunnel_bindings(specs: &[String]) -> Result<Vec<client::TunnelBinding>> {
+    // If no specs provided, use default SSH binding
+    if specs.is_empty() {
+        return Ok(vec![client::TunnelBinding {
+            name: "ssh".to_string(),
+            local_port: 2222,
+        }]);
+    }
+
+    let mut bindings = Vec::new();
+
+    for spec in specs {
+        let parts: Vec<&str> = spec.split(':').collect();
+
+        let binding = match parts.len() {
+            2 => client::TunnelBinding {
+                name: parts[0].to_string(),
+                local_port: parts[1]
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid port in: {}", spec))?,
+            },
+            1 => {
+                // Use default ports for known services
+                let name = parts[0];
+                let port = default_port_for_service(name);
+                client::TunnelBinding {
+                    name: name.to_string(),
+                    local_port: port,
+                }
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Invalid tunnel binding: {}. Expected format: name:port or name",
+                    spec
+                ));
+            }
+        };
+
+        bindings.push(binding);
+    }
+
+    Ok(bindings)
+}
+
+/// Get default local port for known service names
+fn default_port_for_service(name: &str) -> u16 {
+    match name.to_lowercase().as_str() {
+        "ssh" => 2222,
+        "postgres" | "postgresql" => 5432,
+        "mysql" | "mariadb" => 3306,
+        "redis" => 6379,
+        "mongodb" | "mongo" => 27017,
+        "http" | "web" => 8080,
+        "https" => 8443,
+        "vnc" => 5900,
+        "rdp" => 3389,
+        _ => 9000, // Default fallback
+    }
 }
 
 async fn show_info() -> Result<()> {
