@@ -16,11 +16,11 @@
 //! 3. Server validates the request and connects to the appropriate backend
 //! 4. Bidirectional data flow begins
 
-use anyhow::{anyhow, Context, Result};
-use iroh::{endpoint::Connection, protocol::ProtocolHandler};
-use n0_future::boxed::BoxFuture;
+use anyhow::{Context, Result};
+use iroh::{endpoint::Connection, protocol::{AcceptError, ProtocolHandler}};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -128,11 +128,14 @@ impl TcpTunnelProtocol {
 }
 
 impl ProtocolHandler for TcpTunnelProtocol {
-    fn accept(&self, connection: Connection) -> BoxFuture<Result<()>> {
+    fn accept(
+        &self,
+        connection: Connection,
+    ) -> impl Future<Output = Result<(), AcceptError>> + Send {
         let config = self.config.clone();
         let authorized_keys = self.authorized_keys.clone();
 
-        Box::pin(async move {
+        async move {
             // Get the remote endpoint's ID for authentication
             let remote_endpoint_id = connection.remote_id();
             let remote_id_str = remote_endpoint_id.to_string();
@@ -148,7 +151,10 @@ impl ProtocolHandler for TcpTunnelProtocol {
 
                 // Close the connection with an error
                 connection.close(1u32.into(), b"unauthorized");
-                return Err(anyhow!("Unauthorized endpoint: {}", remote_id_str));
+                return Err(AcceptError::custom(format!(
+                    "Unauthorized endpoint: {}",
+                    remote_id_str
+                )));
             }
 
             info!("Authorized connection from: {}", remote_id_str);
@@ -181,7 +187,7 @@ impl ProtocolHandler for TcpTunnelProtocol {
             }
 
             Ok(())
-        })
+        }
     }
 }
 
