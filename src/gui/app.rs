@@ -110,13 +110,13 @@ pub fn run_gui(start_mode: Option<&str>) -> anyhow::Result<()> {
         _ => Mode::Server,
     };
 
-    // Get initial node ID
+    // Get initial endpoint ID
     {
         let event_tx = event_tx.clone();
         runtime.spawn(async move {
             if let Ok(endpoint) = iroh::Endpoint::bind().await {
-                let node_id = endpoint.node_id().to_string();
-                let _ = event_tx.send(GuiEvent::NodeIdReady(node_id));
+                let endpoint_id = endpoint.id().to_string();
+                let _ = event_tx.send(GuiEvent::NodeIdReady(endpoint_id));
                 endpoint.close().await;
             }
         });
@@ -182,8 +182,8 @@ async fn async_command_handler(
     event_tx: mpsc::UnboundedSender<GuiEvent>,
 ) {
     use iroh::protocol::Router;
-    use iroh::Endpoint;
-    use iroh_tickets::{endpoint::EndpointTicket, Ticket};
+    use iroh::{Endpoint, EndpointAddr};
+    use std::str::FromStr;
     use tokio::net::TcpListener;
 
     // Current server state
@@ -228,15 +228,13 @@ async fn async_command_handler(
                 // Wait for online
                 endpoint.online().await;
 
-                let node_id = endpoint.node_id().to_string();
-                let _ = event_tx.send(GuiEvent::NodeIdReady(node_id.clone()));
-                log(&event_tx, LogLevel::Info, format!("Node ID: {}", node_id));
+                let endpoint_id = endpoint.id().to_string();
+                let _ = event_tx.send(GuiEvent::NodeIdReady(endpoint_id.clone()));
+                log(&event_tx, LogLevel::Info, format!("Endpoint ID: {}", endpoint_id));
 
-                // Generate ticket
-                if let Ok(addr) = endpoint.addr().await {
-                    let ticket = EndpointTicket::new(addr);
-                    let _ = event_tx.send(GuiEvent::TicketReady(ticket.serialize()));
-                }
+                // Get address for sharing
+                let addr = endpoint.addr();
+                let _ = event_tx.send(GuiEvent::TicketReady(addr.to_string()));
 
                 // Create protocol handler
                 let protocol = TcpTunnelProtocol::new(config.clone(), authorized_keys);
@@ -280,18 +278,17 @@ async fn async_command_handler(
                 log(&event_tx, LogLevel::Info, "Connecting to server...");
                 let _ = event_tx.send(GuiEvent::StatusChanged(ConnectionStatus::Connecting));
 
-                // Parse ticket
-                let endpoint_ticket = match EndpointTicket::deserialize(&ticket) {
-                    Ok(t) => t,
+                // Parse endpoint address
+                let remote_addr = match EndpointAddr::from_str(&ticket) {
+                    Ok(a) => a,
                     Err(e) => {
-                        log(&event_tx, LogLevel::Error, format!("Invalid ticket: {}", e));
-                        let _ = event_tx.send(GuiEvent::StatusChanged(ConnectionStatus::Error("Invalid ticket".to_string())));
+                        log(&event_tx, LogLevel::Error, format!("Invalid address: {}", e));
+                        let _ = event_tx.send(GuiEvent::StatusChanged(ConnectionStatus::Error("Invalid address".to_string())));
                         continue;
                     }
                 };
 
-                let remote_addr = endpoint_ticket.endpoint_addr().clone();
-                let remote_node_id = remote_addr.node_id;
+                let remote_endpoint_id = remote_addr.node_id;
 
                 // Create endpoint
                 let endpoint = match Endpoint::bind().await {
@@ -303,11 +300,11 @@ async fn async_command_handler(
                     }
                 };
 
-                let our_node_id = endpoint.node_id().to_string();
-                let _ = event_tx.send(GuiEvent::NodeIdReady(our_node_id.clone()));
+                let our_endpoint_id = endpoint.id().to_string();
+                let _ = event_tx.send(GuiEvent::NodeIdReady(our_endpoint_id.clone()));
 
                 // Connect
-                log(&event_tx, LogLevel::Info, format!("Connecting to {}...", remote_node_id));
+                log(&event_tx, LogLevel::Info, format!("Connecting to {}...", remote_endpoint_id));
                 let connection = match endpoint.connect(remote_addr, ALPN).await {
                     Ok(c) => Arc::new(c),
                     Err(e) => {

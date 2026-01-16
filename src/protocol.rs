@@ -4,8 +4,8 @@
 //! The protocol is designed with security as a primary concern:
 //!
 //! 1. All connections are end-to-end encrypted via QUIC/TLS
-//! 2. Nodes are identified by Ed25519 public keys (NodeId)
-//! 3. Only authorized NodeIds can establish tunnels
+//! 2. Nodes are identified by Ed25519 public keys (EndpointId)
+//! 3. Only authorized EndpointIds can establish tunnels
 //! 4. The server verifies the connecting node's identity before allowing tunnel creation
 //!
 //! ## Multi-Port Protocol
@@ -133,14 +133,14 @@ impl ProtocolHandler for TcpTunnelProtocol {
         let authorized_keys = self.authorized_keys.clone();
 
         Box::pin(async move {
-            // Get the remote node's ID for authentication
-            let remote_node_id = connection.remote_node_id()?;
-            let remote_id_str = remote_node_id.to_string();
+            // Get the remote endpoint's ID for authentication
+            let remote_endpoint_id = connection.remote_id();
+            let remote_id_str = remote_endpoint_id.to_string();
 
-            info!("Incoming connection from node: {}", remote_id_str);
+            info!("Incoming connection from endpoint: {}", remote_id_str);
 
-            // SECURITY: Verify the connecting node is authorized
-            if !authorized_keys.is_authorized(&remote_node_id) {
+            // SECURITY: Verify the connecting endpoint is authorized
+            if !authorized_keys.is_authorized(&remote_endpoint_id) {
                 warn!(
                     "Rejected unauthorized connection attempt from: {}",
                     remote_id_str
@@ -148,7 +148,7 @@ impl ProtocolHandler for TcpTunnelProtocol {
 
                 // Close the connection with an error
                 connection.close(1u32.into(), b"unauthorized");
-                return Err(anyhow!("Unauthorized node: {}", remote_id_str));
+                return Err(anyhow!("Unauthorized endpoint: {}", remote_id_str));
             }
 
             info!("Authorized connection from: {}", remote_id_str);

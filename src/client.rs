@@ -5,8 +5,8 @@
 //! connections through Iroh to configured remote services.
 
 use anyhow::{anyhow, Context, Result};
-use iroh::Endpoint;
-use iroh_tickets::{endpoint::EndpointTicket, Ticket};
+use iroh::{Endpoint, EndpointAddr};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
@@ -27,23 +27,22 @@ pub struct TunnelBinding {
 }
 
 /// Run the mole client
-pub async fn run(ticket_str: String, tunnel_bindings: Vec<TunnelBinding>) -> Result<()> {
-    // Parse the connection ticket
-    let ticket = EndpointTicket::deserialize(&ticket_str)
-        .map_err(|e| anyhow!("Invalid connection ticket: {}", e))?;
+pub async fn run(addr_str: String, tunnel_bindings: Vec<TunnelBinding>) -> Result<()> {
+    // Parse the endpoint address
+    let remote_addr = EndpointAddr::from_str(&addr_str)
+        .map_err(|e| anyhow!("Invalid endpoint address: {}", e))?;
 
-    let remote_addr = ticket.endpoint_addr().clone();
-    let remote_node_id = remote_addr.node_id;
+    let remote_endpoint_id = remote_addr.node_id;
 
-    info!("Connecting to remote server: {}", remote_node_id);
+    info!("Connecting to remote server: {}", remote_endpoint_id);
 
     // Create our endpoint
     let endpoint = Endpoint::bind()
         .await
         .context("Failed to create Iroh endpoint")?;
 
-    let our_node_id = endpoint.node_id();
-    info!("Our node ID: {}", our_node_id);
+    let our_endpoint_id = endpoint.id();
+    info!("Our endpoint ID: {}", our_endpoint_id);
 
     // Connect to the remote server
     info!("Establishing connection...");
@@ -63,8 +62,8 @@ pub async fn run(ticket_str: String, tunnel_bindings: Vec<TunnelBinding>) -> Res
     println!("  Mole TCP Tunnel Client");
     println!("========================================");
     println!();
-    println!("Connected to: {}", remote_node_id);
-    println!("Our Node ID:  {}", our_node_id);
+    println!("Connected to:    {}", remote_endpoint_id);
+    println!("Our Endpoint ID: {}", our_endpoint_id);
     println!();
     println!("Active Tunnels:");
 

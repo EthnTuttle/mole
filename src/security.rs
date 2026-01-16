@@ -1,12 +1,12 @@
 //! Security module for Mole
 //!
 //! Handles:
-//! - Authorized keys management (which nodes can connect)
-//! - Node identity persistence
+//! - Authorized keys management (which endpoints can connect)
+//! - Endpoint identity persistence
 //! - Configuration storage
 
 use anyhow::{anyhow, Context, Result};
-use iroh::NodeId;
+use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -60,8 +60,8 @@ pub struct AuthorizedKeysConfig {
 /// Runtime authorized keys checker
 #[derive(Debug)]
 pub struct AuthorizedKeys {
-    /// Map of authorized node IDs to their labels
-    authorized: HashMap<NodeId, Option<String>>,
+    /// Map of authorized endpoint IDs to their labels
+    authorized: HashMap<EndpointId, Option<String>>,
     /// Whether to allow all connections (no authorization required)
     allow_all: bool,
 }
@@ -77,9 +77,9 @@ impl AuthorizedKeys {
 
         let mut authorized = HashMap::new();
         for entry in config.keys {
-            let node_id = NodeId::from_str(&entry.node_id)
-                .with_context(|| format!("Invalid node ID: {}", entry.node_id))?;
-            authorized.insert(node_id, entry.label);
+            let endpoint_id = EndpointId::from_str(&entry.node_id)
+                .with_context(|| format!("Invalid endpoint ID: {}", entry.node_id))?;
+            authorized.insert(endpoint_id, entry.label);
         }
 
         info!("Loaded {} authorized key(s)", authorized.len());
@@ -98,7 +98,7 @@ impl AuthorizedKeys {
             // No authorized keys file - deny all by default for security
             info!("No authorized keys file found - all connections will be denied");
             info!(
-                "Add authorized keys with: mole keys add <node_id> --label <description>"
+                "Add authorized keys with: mole keys add <endpoint_id> --label <description>"
             );
             Ok(Self {
                 authorized: HashMap::new(),
@@ -116,17 +116,17 @@ impl AuthorizedKeys {
         }
     }
 
-    /// Check if a node ID is authorized
-    pub fn is_authorized(&self, node_id: &NodeId) -> bool {
+    /// Check if an endpoint ID is authorized
+    pub fn is_authorized(&self, endpoint_id: &EndpointId) -> bool {
         if self.allow_all {
             return true;
         }
-        self.authorized.contains_key(node_id)
+        self.authorized.contains_key(endpoint_id)
     }
 
-    /// Get the label for an authorized node
-    pub fn get_label(&self, node_id: &NodeId) -> Option<&str> {
-        self.authorized.get(node_id).and_then(|l| l.as_deref())
+    /// Get the label for an authorized endpoint
+    pub fn get_label(&self, endpoint_id: &EndpointId) -> Option<&str> {
+        self.authorized.get(endpoint_id).and_then(|l| l.as_deref())
     }
 }
 
@@ -165,9 +165,9 @@ pub fn list_authorized_keys() -> Result<()> {
 }
 
 /// Add a new authorized key
-pub fn add_authorized_key(node_id: &str, label: Option<&str>) -> Result<()> {
-    // Validate the node ID format
-    NodeId::from_str(node_id).with_context(|| format!("Invalid node ID format: {}", node_id))?;
+pub fn add_authorized_key(endpoint_id: &str, label: Option<&str>) -> Result<()> {
+    // Validate the endpoint ID format
+    EndpointId::from_str(endpoint_id).with_context(|| format!("Invalid endpoint ID format: {}", endpoint_id))?;
 
     let path = authorized_keys_path()?;
 
@@ -179,13 +179,13 @@ pub fn add_authorized_key(node_id: &str, label: Option<&str>) -> Result<()> {
     };
 
     // Check if already exists
-    if config.keys.iter().any(|k| k.node_id == node_id) {
-        return Err(anyhow!("Node ID is already authorized"));
+    if config.keys.iter().any(|k| k.node_id == endpoint_id) {
+        return Err(anyhow!("Endpoint ID is already authorized"));
     }
 
     // Add the new key
     let entry = AuthorizedKeyEntry {
-        node_id: node_id.to_string(),
+        node_id: endpoint_id.to_string(),
         label: label.map(String::from),
         added_at: chrono_lite_timestamp(),
     };
@@ -204,16 +204,16 @@ pub fn add_authorized_key(node_id: &str, label: Option<&str>) -> Result<()> {
     }
 
     println!("Added authorized key:");
-    println!("  Node ID: {}", node_id);
+    println!("  Endpoint ID: {}", endpoint_id);
     if let Some(l) = label {
-        println!("  Label:   {}", l);
+        println!("  Label:      {}", l);
     }
 
     Ok(())
 }
 
 /// Remove an authorized key
-pub fn remove_authorized_key(node_id: &str) -> Result<()> {
+pub fn remove_authorized_key(endpoint_id: &str) -> Result<()> {
     let path = authorized_keys_path()?;
 
     if !path.exists() {
@@ -224,34 +224,34 @@ pub fn remove_authorized_key(node_id: &str) -> Result<()> {
     let mut config: AuthorizedKeysConfig = serde_json::from_str(&content)?;
 
     let initial_len = config.keys.len();
-    config.keys.retain(|k| k.node_id != node_id);
+    config.keys.retain(|k| k.node_id != endpoint_id);
 
     if config.keys.len() == initial_len {
-        return Err(anyhow!("Node ID not found in authorized keys"));
+        return Err(anyhow!("Endpoint ID not found in authorized keys"));
     }
 
     let content = serde_json::to_string_pretty(&config)?;
     fs::write(&path, content)?;
 
-    println!("Removed authorized key: {}", node_id);
+    println!("Removed authorized key: {}", endpoint_id);
 
     Ok(())
 }
 
-/// Generate a new node identity and display its ID
+/// Generate a new endpoint identity and display its ID
 pub async fn generate_identity() -> Result<()> {
     use iroh::Endpoint;
 
     // Create a new endpoint which generates a new identity
     let endpoint = Endpoint::bind().await?;
-    let node_id = endpoint.node_id();
+    let endpoint_id = endpoint.id();
 
-    println!("Generated new node identity");
+    println!("Generated new endpoint identity");
     println!();
-    println!("Node ID: {}", node_id);
+    println!("Endpoint ID: {}", endpoint_id);
     println!();
-    println!("Share this Node ID with mole servers to get authorized access.");
-    println!("Run 'mole info' anytime to see your Node ID.");
+    println!("Share this Endpoint ID with mole servers to get authorized access.");
+    println!("Run 'mole info' anytime to see your Endpoint ID.");
 
     endpoint.close().await;
     Ok(())

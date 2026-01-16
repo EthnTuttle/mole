@@ -7,7 +7,6 @@
 use anyhow::{Context, Result};
 use iroh::protocol::Router;
 use iroh::Endpoint;
-use iroh_tickets::{endpoint::EndpointTicket, Ticket};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -48,20 +47,19 @@ pub async fn run(
     info!("Waiting for endpoint to come online...");
     endpoint.online().await;
 
-    let node_id = endpoint.node_id();
-    info!("Server node ID: {}", node_id);
+    let endpoint_id = endpoint.id();
+    info!("Server endpoint ID: {}", endpoint_id);
 
-    // Generate the connection ticket
-    let addr = endpoint.addr().await?;
-    let ticket = EndpointTicket::new(addr);
-    let ticket_str = ticket.serialize();
+    // Get the endpoint address for sharing
+    let addr = endpoint.addr();
+    let addr_str = addr.to_string();
 
     // Create the protocol handler
     let protocol = TcpTunnelProtocol::new(config.clone(), authorized_keys);
 
     if ticket_only {
-        // Just print the ticket and exit
-        println!("{}", ticket_str);
+        // Just print the address and exit
+        println!("{}", addr_str);
         endpoint.close().await;
         return Ok(());
     }
@@ -72,7 +70,7 @@ pub async fn run(
     println!("  Mole TCP Tunnel Server");
     println!("========================================");
     println!();
-    println!("Node ID: {}", node_id);
+    println!("Endpoint ID: {}", endpoint_id);
     println!();
     println!("Available Tunnels:");
     for (name, target) in &config.tunnels {
@@ -86,14 +84,14 @@ pub async fn run(
         );
     }
     println!();
-    println!("Connection Ticket (share with clients):");
+    println!("Connection Address (share with clients):");
     println!();
-    println!("{}", ticket_str);
+    println!("{}", addr_str);
     println!();
     println!("========================================");
     println!();
     println!("Clients can connect with:");
-    println!("  mole connect {}", ticket_str);
+    println!("  mole connect {}", addr_str);
     println!();
     println!("Waiting for connections... (Ctrl+C to stop)");
     println!();

@@ -243,13 +243,13 @@ async fn show_info() -> Result<()> {
     use iroh::Endpoint;
 
     let endpoint = Endpoint::bind().await?;
-    let node_id = endpoint.node_id();
+    let endpoint_id = endpoint.id();
 
-    println!("Mole Node Information");
-    println!("=====================");
-    println!("Node ID: {}", node_id);
+    println!("Mole Endpoint Information");
+    println!("=========================");
+    println!("Endpoint ID: {}", endpoint_id);
     println!();
-    println!("Share this Node ID with servers to get authorized access.");
+    println!("Share this Endpoint ID with servers to get authorized access.");
     println!();
     println!("Config directory: {}", security::config_dir()?.display());
 
