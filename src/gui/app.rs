@@ -182,7 +182,7 @@ async fn async_command_handler(
     event_tx: mpsc::UnboundedSender<GuiEvent>,
 ) {
     use iroh::protocol::Router;
-    use iroh::{Endpoint, EndpointAddr};
+    use iroh::{Endpoint, EndpointId};
     use std::str::FromStr;
     use tokio::net::TcpListener;
 
@@ -232,9 +232,8 @@ async fn async_command_handler(
                 let _ = event_tx.send(GuiEvent::NodeIdReady(endpoint_id.clone()));
                 log(&event_tx, LogLevel::Info, format!("Endpoint ID: {}", endpoint_id));
 
-                // Get address for sharing
-                let addr = endpoint.addr();
-                let _ = event_tx.send(GuiEvent::TicketReady(addr.to_string()));
+                // Use endpoint ID for client connections
+                let _ = event_tx.send(GuiEvent::TicketReady(endpoint_id.clone()));
 
                 // Create protocol handler
                 let protocol = TcpTunnelProtocol::new(config.clone(), authorized_keys);
@@ -278,17 +277,15 @@ async fn async_command_handler(
                 log(&event_tx, LogLevel::Info, "Connecting to server...");
                 let _ = event_tx.send(GuiEvent::StatusChanged(ConnectionStatus::Connecting));
 
-                // Parse endpoint address
-                let remote_addr = match EndpointAddr::from_str(&ticket) {
-                    Ok(a) => a,
+                // Parse endpoint ID
+                let remote_endpoint_id = match EndpointId::from_str(&ticket) {
+                    Ok(id) => id,
                     Err(e) => {
-                        log(&event_tx, LogLevel::Error, format!("Invalid address: {}", e));
-                        let _ = event_tx.send(GuiEvent::StatusChanged(ConnectionStatus::Error("Invalid address".to_string())));
+                        log(&event_tx, LogLevel::Error, format!("Invalid endpoint ID: {}", e));
+                        let _ = event_tx.send(GuiEvent::StatusChanged(ConnectionStatus::Error("Invalid endpoint ID".to_string())));
                         continue;
                     }
                 };
-
-                let remote_endpoint_id = remote_addr.node_id;
 
                 // Create endpoint
                 let endpoint = match Endpoint::bind().await {
@@ -305,7 +302,7 @@ async fn async_command_handler(
 
                 // Connect
                 log(&event_tx, LogLevel::Info, format!("Connecting to {}...", remote_endpoint_id));
-                let connection = match endpoint.connect(remote_addr, ALPN).await {
+                let connection: Arc<iroh::endpoint::Connection> = match endpoint.connect(remote_endpoint_id, ALPN).await {
                     Ok(c) => Arc::new(c),
                     Err(e) => {
                         log(&event_tx, LogLevel::Error, format!("Connection failed: {}", e));
@@ -390,13 +387,12 @@ async fn async_command_handler(
 
 /// Run a client tunnel listener
 async fn run_client_listener(
-    listener: TcpListener,
+    listener: tokio::net::TcpListener,
     connection: Arc<iroh::endpoint::Connection>,
     tunnel_name: String,
     event_tx: mpsc::UnboundedSender<GuiEvent>,
 ) {
     use crate::protocol::{read_tunnel_response, send_tunnel_request, TunnelRequest};
-    use tokio::io::AsyncWriteExt;
 
     loop {
         match listener.accept().await {
@@ -437,7 +433,7 @@ async fn run_client_listener(
                     }
 
                     // Bidirectional copy
-                    let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
+                    let (mut tcp_read, mut tcp_write) = tokio::net::TcpStream::into_split(tcp_stream);
 
                     tokio::select! {
                         _ = tokio::io::copy(&mut tcp_read, &mut send) => {}

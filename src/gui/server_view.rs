@@ -59,17 +59,17 @@ impl ServerView {
             widgets::copyable_field(ui, "Node ID", node_id);
         }
 
-        // Connection ticket
-        if let Some(ref ticket) = state.ticket {
+        // Connection ticket (endpoint ID)
+        if let Some(ticket) = state.ticket.clone() {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label("Ticket:");
-                if ui.button("Copy Ticket").clicked() {
+                ui.label("Endpoint ID:");
+                if ui.button("Copy").clicked() {
                     #[cfg(feature = "gui")]
                     if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        let _ = clipboard.set_text(ticket);
-                        state.log(LogLevel::Info, "Ticket copied to clipboard");
+                        let _ = clipboard.set_text(&ticket);
                     }
+                    state.log(LogLevel::Info, "Endpoint ID copied to clipboard");
                 }
             });
             ui.add_space(2.0);

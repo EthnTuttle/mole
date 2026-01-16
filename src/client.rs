@@ -5,7 +5,7 @@
 //! connections through Iroh to configured remote services.
 
 use anyhow::{anyhow, Context, Result};
-use iroh::{Endpoint, EndpointAddr};
+use iroh::{Endpoint, EndpointId};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -27,12 +27,10 @@ pub struct TunnelBinding {
 }
 
 /// Run the mole client
-pub async fn run(addr_str: String, tunnel_bindings: Vec<TunnelBinding>) -> Result<()> {
-    // Parse the endpoint address
-    let remote_addr = EndpointAddr::from_str(&addr_str)
-        .map_err(|e| anyhow!("Invalid endpoint address: {}", e))?;
-
-    let remote_endpoint_id = remote_addr.node_id;
+pub async fn run(endpoint_id_str: String, tunnel_bindings: Vec<TunnelBinding>) -> Result<()> {
+    // Parse the endpoint ID
+    let remote_endpoint_id = EndpointId::from_str(&endpoint_id_str)
+        .map_err(|e| anyhow!("Invalid endpoint ID: {}", e))?;
 
     info!("Connecting to remote server: {}", remote_endpoint_id);
 
@@ -47,7 +45,7 @@ pub async fn run(addr_str: String, tunnel_bindings: Vec<TunnelBinding>) -> Resul
     // Connect to the remote server
     info!("Establishing connection...");
     let connection = endpoint
-        .connect(remote_addr, ALPN)
+        .connect(remote_endpoint_id, ALPN)
         .await
         .context("Failed to connect to remote server")?;
 

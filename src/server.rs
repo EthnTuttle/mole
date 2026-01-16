@@ -50,16 +50,12 @@ pub async fn run(
     let endpoint_id = endpoint.id();
     info!("Server endpoint ID: {}", endpoint_id);
 
-    // Get the endpoint address for sharing
-    let addr = endpoint.addr();
-    let addr_str = addr.to_string();
-
     // Create the protocol handler
     let protocol = TcpTunnelProtocol::new(config.clone(), authorized_keys);
 
     if ticket_only {
-        // Just print the address and exit
-        println!("{}", addr_str);
+        // Just print the endpoint ID and exit
+        println!("{}", endpoint_id);
         endpoint.close().await;
         return Ok(());
     }
@@ -84,14 +80,10 @@ pub async fn run(
         );
     }
     println!();
-    println!("Connection Address (share with clients):");
-    println!();
-    println!("{}", addr_str);
-    println!();
     println!("========================================");
     println!();
     println!("Clients can connect with:");
-    println!("  mole connect {}", addr_str);
+    println!("  mole connect {}", endpoint_id);
     println!();
     println!("Waiting for connections... (Ctrl+C to stop)");
     println!();
