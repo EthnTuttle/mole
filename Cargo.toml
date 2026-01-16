@@ -2,9 +2,13 @@
 name = "mole"
 version = "0.1.0"
 edition = "2021"
-description = "Secure SSH tunneling over Iroh - access your machine from anywhere"
+description = "Secure TCP tunneling over Iroh - access your machine from anywhere"
 license = "MIT"
 repository = "https://github.com/EthnTuttle/mole"
+
+[features]
+default = ["gui"]
+gui = ["eframe", "egui", "arboard"]
 
 [[bin]]
 name = "mole"
@@ -40,3 +44,8 @@ rand = "0.8"
 
 # File system
 dirs = "6"
+
+# GUI (optional)
+eframe = { version = "0.31", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = { version = "0.31", optional = true }
+arboard = { version = "3", optional = true }

@@ -10,6 +10,7 @@ Secure TCP tunneling over [Iroh](https://iroh.computer) - access any service on 
 - **Multi-Port Tunneling**: Tunnel multiple services (SSH, databases, web servers) over a single connection
 - **Direct Connections**: Establishes direct peer-to-peer connections when possible, falls back to relays
 - **Zero Configuration Networking**: No need to know IP addresses or configure DNS
+- **GUI & CLI**: Use the graphical interface or command line - your choice
 
 ## How It Works
 
@@ -55,7 +56,33 @@ Secure TCP tunneling over [Iroh](https://iroh.computer) - access any service on 
 cargo install --path .
 ```
 
-## Quick Start
+To build without the GUI (CLI only):
+```bash
+cargo install --path . --no-default-features
+```
+
+## Graphical Interface
+
+Simply run `mole` with no arguments to launch the GUI:
+
+```bash
+mole
+```
+
+Or explicitly:
+```bash
+mole gui              # Launch GUI
+mole gui --mode server  # Start in server mode
+mole gui --mode client  # Start in client mode
+```
+
+The GUI provides:
+- **Server Mode**: Configure tunnels, manage authorized keys, view connection logs
+- **Client Mode**: Paste tickets, configure tunnel bindings, see connection status
+- **Copy buttons**: Easily copy Node IDs and tickets to clipboard
+- **Real-time logs**: See what's happening with your tunnels
+
+## Quick Start (CLI)
 
 ### Single Service (SSH)
 

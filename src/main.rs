@@ -7,6 +7,8 @@
 //! - Direct when possible, relayed when necessary
 
 mod client;
+#[cfg(feature = "gui")]
+mod gui;
 mod protocol;
 mod security;
 mod server;
@@ -21,7 +23,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 
     /// Enable verbose logging
     #[arg(short, long, global = true)]
@@ -30,6 +32,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Launch the graphical user interface
+    #[cfg(feature = "gui")]
+    Gui {
+        /// Start in server or client mode
+        #[arg(short, long, value_parser = ["server", "client"])]
+        mode: Option<String>,
+    },
+
     /// Run as a server on the host machine (accepts tunnel connections)
     Serve {
         /// Tunnel specifications: name:host:port[:local_port]
@@ -93,11 +103,22 @@ enum KeysAction {
     Generate,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
+    // If no command specified, launch GUI (if available)
+    #[cfg(feature = "gui")]
+    if cli.command.is_none() {
+        return gui::run_gui(None);
+    }
+
+    #[cfg(not(feature = "gui"))]
+    if cli.command.is_none() {
+        eprintln!("No command specified. Run with --help for usage.");
+        std::process::exit(1);
+    }
+
+    // Initialize logging for CLI commands
     let filter = if cli.verbose {
         EnvFilter::new("mole=debug,iroh=debug")
     } else {
@@ -109,18 +130,28 @@ async fn main() -> Result<()> {
         .with(filter)
         .init();
 
-    match cli.command {
+    // Build runtime for async commands
+    let runtime = tokio::runtime::Runtime::new()?;
+
+    match cli.command.unwrap() {
+        #[cfg(feature = "gui")]
+        Commands::Gui { mode } => {
+            // Drop runtime before starting GUI (GUI creates its own)
+            drop(runtime);
+            gui::run_gui(mode.as_deref())?;
+        }
+
         Commands::Serve {
             tunnels,
             authorized_keys,
             ticket,
         } => {
-            server::run(tunnels, authorized_keys, ticket).await?;
+            runtime.block_on(server::run(tunnels, authorized_keys, ticket))?;
         }
 
         Commands::Connect { ticket, tunnels } => {
             let bindings = parse_tunnel_bindings(&tunnels)?;
-            client::run(ticket, bindings).await?;
+            runtime.block_on(client::run(ticket, bindings))?;
         }
 
         Commands::Keys { action } => match action {
@@ -134,12 +165,12 @@ async fn main() -> Result<()> {
                 security::remove_authorized_key(&node_id)?;
             }
             KeysAction::Generate => {
-                security::generate_identity().await?;
+                runtime.block_on(security::generate_identity())?;
             }
         },
 
         Commands::Info => {
-            show_info().await?;
+            runtime.block_on(show_info())?;
         }
     }
 
