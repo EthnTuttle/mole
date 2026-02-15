@@ -405,7 +405,11 @@ async fn async_command_handler(
                     }
                 };
 
-                log(&event_tx, LogLevel::Info, "Connected! Starting tunnel listeners...");
+                if tunnels.is_empty() {
+                    log(&event_tx, LogLevel::Info, "Connected (chat-only, no tunnels)");
+                } else {
+                    log(&event_tx, LogLevel::Info, "Connected! Starting tunnel listeners...");
+                }
 
                 // Start local listeners for each tunnel
                 let mut statuses = Vec::new();

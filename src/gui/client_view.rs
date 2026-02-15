@@ -295,9 +295,12 @@ impl ClientView {
             })
             .collect();
 
+        // Allow connecting without tunnels (chat-only mode)
         if tunnels.is_empty() {
-            state.log(LogLevel::Error, "No valid tunnel bindings configured");
-            return;
+            state.log(
+                LogLevel::Info,
+                "Connecting without tunnels (chat-only mode)",
+            );
         }
 
         state.send_command(GuiCommand::Connect {
