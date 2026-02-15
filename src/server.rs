@@ -8,10 +8,11 @@ use anyhow::{Context, Result};
 use iroh::protocol::Router;
 use iroh::Endpoint;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::info;
 
-use crate::protocol::{TcpTunnelProtocol, TunnelConfig, TunnelTarget, ALPN};
-use crate::security::AuthorizedKeys;
+use crate::protocol::{ChatProtocol, ChatRoom, TcpTunnelProtocol, TunnelConfig, TunnelTarget, ALPN, CHAT_ALPN};
+use crate::security::{AuthorizedKeys, ChatAuthorizedKeys};
 
 /// Server configuration with tunnels
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,20 +26,25 @@ pub async fn run(
     tunnel_specs: Vec<String>,
     authorized_keys_path: Option<String>,
     ticket_only: bool,
+    show_qr: bool,
 ) -> Result<()> {
     // Parse tunnel specifications
     let config = parse_tunnel_specs(&tunnel_specs)?;
 
-    // Load authorized keys
+    // Load authorized keys for tunnels
     let authorized_keys = if let Some(path) = authorized_keys_path {
         AuthorizedKeys::from_file(&path)?
     } else {
         AuthorizedKeys::from_default_config()?
     };
 
-    // Create the endpoint with our ALPN
+    // Load authorized keys for chat
+    let chat_authorized_keys = ChatAuthorizedKeys::from_default_config()
+        .unwrap_or_else(|_| ChatAuthorizedKeys::allow_all());
+
+    // Create the endpoint with both ALPNs
     let endpoint = Endpoint::builder()
-        .alpns(vec![ALPN.to_vec()])
+        .alpns(vec![ALPN.to_vec(), CHAT_ALPN.to_vec()])
         .bind()
         .await
         .context("Failed to create Iroh endpoint")?;
@@ -50,8 +56,12 @@ pub async fn run(
     let endpoint_id = endpoint.id();
     info!("Server endpoint ID: {}", endpoint_id);
 
-    // Create the protocol handler
-    let protocol = TcpTunnelProtocol::new(config.clone(), authorized_keys);
+    // Create the tunnel protocol handler
+    let tunnel_protocol = TcpTunnelProtocol::new(config.clone(), authorized_keys);
+
+    // Create the chat room and protocol handler
+    let chat_room = Arc::new(ChatRoom::new(chat_authorized_keys));
+    let chat_protocol = ChatProtocol::new(chat_room);
 
     if ticket_only {
         // Just print the endpoint ID and exit
@@ -80,16 +90,29 @@ pub async fn run(
         );
     }
     println!();
+    println!("Chat: enabled (use 'mole chat {}' to connect)", endpoint_id);
+    println!();
     println!("========================================");
     println!();
     println!("Clients can connect with:");
     println!("  mole connect {}", endpoint_id);
     println!();
+    println!("Chat with:");
+    println!("  mole chat {}", endpoint_id);
+    println!();
+
+    if show_qr {
+        mole::qr::print_qr("Scan to connect with Mole Android", &endpoint_id.to_string());
+    }
+
     println!("Waiting for connections... (Ctrl+C to stop)");
     println!();
 
-    // Build and spawn the router
-    let router = Router::builder(endpoint).accept(ALPN, protocol).spawn();
+    // Build and spawn the router with both protocols
+    let router = Router::builder(endpoint)
+        .accept(ALPN, tunnel_protocol)
+        .accept(CHAT_ALPN, chat_protocol)
+        .spawn();
 
     // Wait for shutdown signal
     tokio::select! {

@@ -66,6 +66,26 @@ pub enum GuiCommand {
         tunnels: Vec<(String, u16)>, // (name, local_port)
     },
     Disconnect,
+
+    // Chat commands
+    ConnectChat {
+        endpoint_id: String,
+    },
+    SendChatMessage {
+        text: String,
+    },
+    DisconnectChat,
+    AddChatAuthorizedKey {
+        node_id: String,
+        label: Option<String>,
+    },
+    RemoveChatAuthorizedKey {
+        node_id: String,
+    },
+    /// Server broadcasts a message to all chat participants
+    ServerBroadcastChat {
+        text: String,
+    },
 }
 
 /// Events from async runtime to GUI
@@ -82,6 +102,21 @@ pub enum GuiEvent {
 
     // Key management
     AuthorizedKeysUpdated(Vec<(String, Option<String>)>), // (node_id, label)
+
+    // Chat events
+    ChatConnected,
+    ChatDisconnected,
+    ChatMessageReceived(ChatMessageEntry),
+    ChatAuthorizedKeysUpdated(Vec<(String, Option<String>)>), // (node_id, label)
+}
+
+/// A chat message for display
+#[derive(Debug, Clone)]
+pub struct ChatMessageEntry {
+    pub sender: String,
+    pub text: String,
+    pub timestamp: String,
+    pub is_self: bool,
 }
 
 /// Shared application state
@@ -100,10 +135,18 @@ pub struct AppState {
     // Logs
     pub logs: VecDeque<LogEntry>,
 
+    // Chat state
+    pub chat_connected: bool,
+    pub chat_messages: VecDeque<ChatMessageEntry>,
+    pub chat_authorized_keys: Vec<(String, Option<String>)>,
+
     // Channels
     pub command_tx: mpsc::UnboundedSender<GuiCommand>,
     pub event_rx: Arc<Mutex<mpsc::UnboundedReceiver<GuiEvent>>>,
 }
+
+/// Maximum number of chat messages to keep
+const MAX_CHAT_MESSAGES: usize = 200;
 
 impl AppState {
     pub fn new(
@@ -117,6 +160,9 @@ impl AppState {
             tunnel_statuses: Vec::new(),
             authorized_keys: Vec::new(),
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            chat_connected: false,
+            chat_messages: VecDeque::with_capacity(MAX_CHAT_MESSAGES),
+            chat_authorized_keys: Vec::new(),
             command_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
         }
@@ -147,6 +193,21 @@ impl AppState {
                 }
                 GuiEvent::AuthorizedKeysUpdated(keys) => {
                     self.authorized_keys = keys;
+                }
+                GuiEvent::ChatConnected => {
+                    self.chat_connected = true;
+                }
+                GuiEvent::ChatDisconnected => {
+                    self.chat_connected = false;
+                }
+                GuiEvent::ChatMessageReceived(msg) => {
+                    if self.chat_messages.len() >= MAX_CHAT_MESSAGES {
+                        self.chat_messages.pop_front();
+                    }
+                    self.chat_messages.push_back(msg);
+                }
+                GuiEvent::ChatAuthorizedKeysUpdated(keys) => {
+                    self.chat_authorized_keys = keys;
                 }
             }
         }

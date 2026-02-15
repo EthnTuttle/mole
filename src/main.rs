@@ -55,6 +55,10 @@ enum Commands {
         /// Generate and display a connection ticket, then exit
         #[arg(long)]
         ticket: bool,
+
+        /// Display endpoint ID as QR code (for mobile scanning)
+        #[arg(long)]
+        qr: bool,
     },
 
     /// Connect to a remote mole server and start tunnels
@@ -68,14 +72,30 @@ enum Commands {
         tunnels: Vec<String>,
     },
 
-    /// Manage authorized keys
+    /// Manage authorized keys (for tunnel access)
     Keys {
         #[command(subcommand)]
         action: KeysAction,
     },
 
+    /// Start an interactive chat session with a remote endpoint
+    Chat {
+        /// Endpoint ID to chat with
+        endpoint_id: String,
+    },
+
+    /// Manage chat authorized keys (separate from tunnel keys)
+    ChatKeys {
+        #[command(subcommand)]
+        action: ChatKeysAction,
+    },
+
     /// Show information about this node
-    Info,
+    Info {
+        /// Display endpoint ID as QR code (for mobile scanning)
+        #[arg(long)]
+        qr: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -101,6 +121,28 @@ enum KeysAction {
 
     /// Generate a new node identity and show its ID
     Generate,
+}
+
+#[derive(Subcommand)]
+enum ChatKeysAction {
+    /// List all chat authorized keys
+    List,
+
+    /// Add a new chat authorized key (node ID)
+    Add {
+        /// Node ID to authorize for chat
+        node_id: String,
+
+        /// Optional label for this key
+        #[arg(short, long)]
+        label: Option<String>,
+    },
+
+    /// Remove a chat authorized key
+    Remove {
+        /// Node ID to remove
+        node_id: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -145,8 +187,9 @@ fn main() -> Result<()> {
             tunnels,
             authorized_keys,
             ticket,
+            qr,
         } => {
-            runtime.block_on(server::run(tunnels, authorized_keys, ticket))?;
+            runtime.block_on(server::run(tunnels, authorized_keys, ticket, qr))?;
         }
 
         Commands::Connect { ticket, tunnels } => {
@@ -169,8 +212,24 @@ fn main() -> Result<()> {
             }
         },
 
-        Commands::Info => {
-            runtime.block_on(show_info())?;
+        Commands::Chat { endpoint_id } => {
+            runtime.block_on(client::run_chat(endpoint_id))?;
+        }
+
+        Commands::ChatKeys { action } => match action {
+            ChatKeysAction::List => {
+                security::list_chat_authorized_keys()?;
+            }
+            ChatKeysAction::Add { node_id, label } => {
+                security::add_chat_authorized_key(&node_id, label.as_deref())?;
+            }
+            ChatKeysAction::Remove { node_id } => {
+                security::remove_chat_authorized_key(&node_id)?;
+            }
+        },
+
+        Commands::Info { qr } => {
+            runtime.block_on(show_info(qr))?;
         }
     }
 
@@ -239,19 +298,29 @@ fn default_port_for_service(name: &str) -> u16 {
     }
 }
 
-async fn show_info() -> Result<()> {
+async fn show_info(show_qr: bool) -> Result<()> {
     use iroh::Endpoint;
 
-    let endpoint = Endpoint::bind().await?;
+    let secret_key = security::load_or_generate_secret_key()?;
+    let endpoint = Endpoint::builder()
+        .secret_key(secret_key)
+        .bind()
+        .await?;
     let endpoint_id = endpoint.id();
+    let endpoint_id_str = endpoint_id.to_string();
 
     println!("Mole Endpoint Information");
     println!("=========================");
-    println!("Endpoint ID: {}", endpoint_id);
+    println!("Endpoint ID: {}", endpoint_id_str);
     println!();
     println!("Share this Endpoint ID with servers to get authorized access.");
     println!();
     println!("Config directory: {}", security::config_dir()?.display());
+
+    if show_qr {
+        println!();
+        mole::qr::print_qr("Scan with Mole Android app", &endpoint_id_str);
+    }
 
     endpoint.close().await;
     Ok(())

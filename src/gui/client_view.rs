@@ -11,6 +11,12 @@ pub struct ClientView {
     pub ticket_input: String,
     /// Tunnel bindings: (name, local_port)
     pub tunnel_bindings: Vec<(String, String)>,
+    /// Chat message input
+    pub chat_input: String,
+    /// Chat endpoint input (for connecting to chat)
+    pub chat_endpoint_input: String,
+    /// Whether to show the QR code popup for own node ID
+    pub show_qr: bool,
 }
 
 impl Default for ClientView {
@@ -18,19 +24,28 @@ impl Default for ClientView {
         Self {
             ticket_input: String::new(),
             tunnel_bindings: vec![("ssh".to_string(), "2222".to_string())],
+            chat_input: String::new(),
+            chat_endpoint_input: String::new(),
+            show_qr: false,
         }
     }
 }
 
 impl ClientView {
     pub fn ui(&mut self, ui: &mut Ui, state: &mut AppState) {
+        // Render QR popup window if open
+        if let Some(ref node_id) = state.node_id {
+            widgets::show_qr_window(ui.ctx(), &mut self.show_qr, "Your Node ID QR Code", node_id);
+        }
+
         // Status section
         section_header(ui, "Connection Status");
         ui.horizontal(|ui| {
             widgets::status_indicator(ui, &state.status);
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                match &state.status {
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| match &state.status {
                     ConnectionStatus::Disconnected | ConnectionStatus::Error(_) => {
                         if ui.button("Connect").clicked() {
                             self.connect(state);
@@ -44,14 +59,19 @@ impl ClientView {
                     ConnectionStatus::Connecting => {
                         ui.add_enabled(false, egui::Button::new("Connecting..."));
                     }
-                }
-            });
+                },
+            );
         });
 
         // Node ID
         if let Some(ref node_id) = state.node_id {
             ui.add_space(4.0);
-            widgets::copyable_field(ui, "Your Node ID", node_id);
+            ui.horizontal(|ui| {
+                widgets::copyable_field(ui, "Your Node ID", node_id);
+                if ui.button("Show QR").clicked() {
+                    self.show_qr = true;
+                }
+            });
             ui.label("Share this with the server admin to get authorized.");
         }
 
@@ -155,6 +175,94 @@ impl ClientView {
                     }
                 });
             }
+        }
+
+        // Chat section
+        section_header(ui, "Chat");
+
+        ui.horizontal(|ui| {
+            if state.chat_connected {
+                ui.label("Status: Connected");
+                if ui.button("Disconnect").clicked() {
+                    state.send_command(GuiCommand::DisconnectChat);
+                }
+            } else {
+                ui.label("Status: Disconnected");
+            }
+        });
+
+        if !state.chat_connected {
+            // Chat endpoint input
+            ui.horizontal(|ui| {
+                ui.label("Endpoint ID:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.chat_endpoint_input)
+                        .hint_text("Enter endpoint ID to chat with...")
+                        .desired_width(200.0),
+                );
+                if ui.button("Connect").clicked() && !self.chat_endpoint_input.is_empty() {
+                    state.send_command(GuiCommand::ConnectChat {
+                        endpoint_id: self.chat_endpoint_input.trim().to_string(),
+                    });
+                }
+            });
+
+            // Quick connect to current tunnel server
+            if !self.ticket_input.is_empty() && ui.button("Chat with tunnel server").clicked() {
+                state.send_command(GuiCommand::ConnectChat {
+                    endpoint_id: self.ticket_input.trim().to_string(),
+                });
+            }
+        } else {
+            // Chat messages
+            ScrollArea::vertical()
+                .max_height(150.0)
+                .stick_to_bottom(true)
+                .id_salt("chat_messages")
+                .show(ui, |ui| {
+                    for msg in &state.chat_messages {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("[{}]", msg.timestamp));
+                            if msg.is_self {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(100, 200, 100),
+                                    &msg.sender,
+                                );
+                            } else {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(100, 150, 255),
+                                    if msg.sender.len() > 8 {
+                                        &msg.sender[..8]
+                                    } else {
+                                        &msg.sender
+                                    },
+                                );
+                            }
+                            ui.label(":");
+                            ui.label(&msg.text);
+                        });
+                    }
+                });
+
+            // Chat input
+            ui.horizontal(|ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.chat_input)
+                        .hint_text("Type a message...")
+                        .desired_width(ui.available_width() - 60.0),
+                );
+
+                let send_clicked = ui.button("Send").clicked();
+                let enter_pressed =
+                    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                if (send_clicked || enter_pressed) && !self.chat_input.is_empty() {
+                    state.send_command(GuiCommand::SendChatMessage {
+                        text: self.chat_input.clone(),
+                    });
+                    self.chat_input.clear();
+                }
+            });
         }
 
         // Logs

@@ -238,15 +238,21 @@ pub fn remove_authorized_key(endpoint_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Generate a new endpoint identity and display its ID
+/// Get or generate the endpoint identity and display its ID
 pub async fn generate_identity() -> Result<()> {
     use iroh::Endpoint;
 
-    // Create a new endpoint which generates a new identity
-    let endpoint = Endpoint::bind().await?;
+    // Load or generate the persistent secret key
+    let secret_key = load_or_generate_secret_key()?;
+    
+    // Create endpoint with the persistent key
+    let endpoint = Endpoint::builder()
+        .secret_key(secret_key)
+        .bind()
+        .await?;
     let endpoint_id = endpoint.id();
 
-    println!("Generated new endpoint identity");
+    println!("Endpoint identity (persistent):");
     println!();
     println!("Endpoint ID: {}", endpoint_id);
     println!();
@@ -264,4 +270,255 @@ fn chrono_lite_timestamp() -> String {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}s since epoch", duration.as_secs())
+}
+
+// ============================================================================
+// Chat Authorized Keys
+// ============================================================================
+
+/// Get the path to the chat authorized keys file
+pub fn chat_authorized_keys_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("chat_authorized_keys.json"))
+}
+
+/// Runtime chat authorized keys checker
+#[derive(Debug)]
+pub struct ChatAuthorizedKeys {
+    /// Map of authorized endpoint IDs to their labels
+    authorized: HashMap<EndpointId, Option<String>>,
+    /// Whether to allow all connections (no authorization required)
+    allow_all: bool,
+}
+
+impl ChatAuthorizedKeys {
+    /// Load chat authorized keys from a file path
+    pub fn from_file(path: &str) -> Result<Self> {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read chat authorized keys from {}", path))?;
+
+        let config: AuthorizedKeysConfig =
+            serde_json::from_str(&content).with_context(|| "Failed to parse chat authorized keys")?;
+
+        let mut authorized = HashMap::new();
+        for entry in config.keys {
+            let endpoint_id = EndpointId::from_str(&entry.node_id)
+                .with_context(|| format!("Invalid endpoint ID: {}", entry.node_id))?;
+            authorized.insert(endpoint_id, entry.label);
+        }
+
+        info!("Loaded {} chat authorized key(s)", authorized.len());
+        Ok(Self {
+            authorized,
+            allow_all: false,
+        })
+    }
+
+    /// Load from the default config location
+    pub fn from_default_config() -> Result<Self> {
+        let path = chat_authorized_keys_path()?;
+        if path.exists() {
+            Self::from_file(path.to_str().unwrap())
+        } else {
+            // No chat authorized keys file - deny all by default for security
+            info!("No chat authorized keys file found - all chat connections will be denied");
+            info!(
+                "Add chat authorized keys with: mole chat-keys add <endpoint_id> --label <description>"
+            );
+            Ok(Self {
+                authorized: HashMap::new(),
+                allow_all: false,
+            })
+        }
+    }
+
+    /// Create a ChatAuthorizedKeys that allows all connections
+    /// WARNING: This should only be used for initial setup/testing
+    pub fn allow_all() -> Self {
+        Self {
+            authorized: HashMap::new(),
+            allow_all: true,
+        }
+    }
+
+    /// Check if an endpoint ID is authorized for chat
+    pub fn is_authorized(&self, endpoint_id: &EndpointId) -> bool {
+        if self.allow_all {
+            return true;
+        }
+        self.authorized.contains_key(endpoint_id)
+    }
+
+    /// Get the label for an authorized chat endpoint
+    pub fn get_label(&self, endpoint_id: &EndpointId) -> Option<&str> {
+        self.authorized.get(endpoint_id).and_then(|l| l.as_deref())
+    }
+}
+
+/// List all chat authorized keys
+pub fn list_chat_authorized_keys() -> Result<()> {
+    let path = chat_authorized_keys_path()?;
+
+    if !path.exists() {
+        println!("No chat authorized keys configured.");
+        println!();
+        println!("Add keys with: mole chat-keys add <node_id> --label <description>");
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&path)?;
+    let config: AuthorizedKeysConfig = serde_json::from_str(&content)?;
+
+    if config.keys.is_empty() {
+        println!("No chat authorized keys configured.");
+        return Ok(());
+    }
+
+    println!("Chat Authorized Keys:");
+    println!("=====================");
+    for entry in &config.keys {
+        let label = entry.label.as_deref().unwrap_or("(no label)");
+        println!();
+        println!("  Node ID: {}", entry.node_id);
+        println!("  Label:   {}", label);
+        println!("  Added:   {}", entry.added_at);
+    }
+    println!();
+    println!("Total: {} key(s)", config.keys.len());
+
+    Ok(())
+}
+
+/// Add a new chat authorized key
+pub fn add_chat_authorized_key(endpoint_id: &str, label: Option<&str>) -> Result<()> {
+    // Validate the endpoint ID format
+    EndpointId::from_str(endpoint_id).with_context(|| format!("Invalid endpoint ID format: {}", endpoint_id))?;
+
+    let path = chat_authorized_keys_path()?;
+
+    let mut config = if path.exists() {
+        let content = fs::read_to_string(&path)?;
+        serde_json::from_str(&content)?
+    } else {
+        AuthorizedKeysConfig::default()
+    };
+
+    // Check if already exists
+    if config.keys.iter().any(|k| k.node_id == endpoint_id) {
+        return Err(anyhow!("Endpoint ID is already authorized for chat"));
+    }
+
+    // Add the new key
+    let entry = AuthorizedKeyEntry {
+        node_id: endpoint_id.to_string(),
+        label: label.map(String::from),
+        added_at: chrono_lite_timestamp(),
+    };
+
+    config.keys.push(entry);
+
+    // Write back
+    let content = serde_json::to_string_pretty(&config)?;
+    fs::write(&path, content)?;
+
+    // Set file permissions to 600 (owner read/write only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    println!("Added chat authorized key:");
+    println!("  Endpoint ID: {}", endpoint_id);
+    if let Some(l) = label {
+        println!("  Label:       {}", l);
+    }
+
+    Ok(())
+}
+
+/// Remove a chat authorized key
+pub fn remove_chat_authorized_key(endpoint_id: &str) -> Result<()> {
+    let path = chat_authorized_keys_path()?;
+
+    if !path.exists() {
+        return Err(anyhow!("No chat authorized keys file found"));
+    }
+
+    let content = fs::read_to_string(&path)?;
+    let mut config: AuthorizedKeysConfig = serde_json::from_str(&content)?;
+
+    let initial_len = config.keys.len();
+    config.keys.retain(|k| k.node_id != endpoint_id);
+
+    if config.keys.len() == initial_len {
+        return Err(anyhow!("Endpoint ID not found in chat authorized keys"));
+    }
+
+    let content = serde_json::to_string_pretty(&config)?;
+    fs::write(&path, content)?;
+
+    println!("Removed chat authorized key: {}", endpoint_id);
+
+    Ok(())
+}
+
+// ============================================================================
+// Secret Key Persistence
+// ============================================================================
+
+use iroh::SecretKey;
+
+/// Get the path to the secret key file
+pub fn secret_key_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("secret_key"))
+}
+
+/// Load the secret key from disk, or generate and save a new one if it doesn't exist.
+///
+/// The key is stored as raw 32 bytes for simplicity and security (no JSON wrapper).
+pub fn load_or_generate_secret_key() -> Result<SecretKey> {
+    let path = secret_key_path()?;
+
+    if path.exists() {
+        // Load existing key
+        let bytes = fs::read(&path)
+            .with_context(|| format!("Failed to read secret key from {:?}", path))?;
+
+        if bytes.len() != 32 {
+            return Err(anyhow!(
+                "Invalid secret key file: expected 32 bytes, got {}",
+                bytes.len()
+            ));
+        }
+
+        let key_bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow!("Failed to convert secret key bytes"))?;
+
+        let secret_key = SecretKey::from_bytes(&key_bytes);
+        info!("Loaded existing secret key from {:?}", path);
+        Ok(secret_key)
+    } else {
+        // Generate new key
+        // Generate 32 random bytes for the key
+        use rand::RngCore;
+        let mut key_bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut key_bytes);
+        let secret_key = SecretKey::from_bytes(&key_bytes);
+        let bytes = secret_key.to_bytes();
+
+        // Write to file
+        fs::write(&path, bytes)
+            .with_context(|| format!("Failed to write secret key to {:?}", path))?;
+
+        // Set file permissions to 600 (owner read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        }
+
+        info!("Generated new secret key and saved to {:?}", path);
+        Ok(secret_key)
+    }
 }

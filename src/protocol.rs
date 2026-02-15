@@ -23,16 +23,23 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[allow(unused_imports)]
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
-use crate::security::AuthorizedKeys;
+use crate::security::{AuthorizedKeys, ChatAuthorizedKeys};
 
-/// ALPN (Application-Layer Protocol Negotiation) identifier for our protocol
+/// ALPN (Application-Layer Protocol Negotiation) identifier for tunnel protocol
 pub const ALPN: &[u8] = b"mole/tcp-tunnel/1";
+
+/// ALPN identifier for chat protocol
+pub const CHAT_ALPN: &[u8] = b"mole/chat/1";
 
 /// Maximum size of tunnel request message (prevents DoS)
 const MAX_REQUEST_SIZE: usize = 1024;
+
+/// Maximum size of chat message (prevents DoS)
+const MAX_CHAT_MSG_SIZE: usize = 65536;
 
 /// A tunnel target configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +68,17 @@ pub struct TunnelResponse {
     pub accepted: bool,
     /// Error message if not accepted
     pub error: Option<String>,
+}
+
+/// Chat message exchanged between participants
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    /// Sender's endpoint ID
+    pub sender: String,
+    /// Message text
+    pub text: String,
+    /// Unix timestamp (seconds since epoch)
+    pub timestamp: u64,
 }
 
 /// Configuration for the tunnel server
@@ -352,6 +370,241 @@ pub async fn send_tunnel_request(
     request: &TunnelRequest,
 ) -> Result<()> {
     let data = serde_json::to_vec(request)?;
+    let len = data.len() as u32;
+
+    send.write_all(&len.to_be_bytes()).await?;
+    send.write_all(&data).await?;
+
+    Ok(())
+}
+
+// ============================================================================
+// Chat Protocol
+// ============================================================================
+
+use std::sync::RwLock;
+use tokio::sync::broadcast;
+
+/// A participant in the chat room
+#[derive(Debug)]
+struct ChatParticipant {
+    endpoint_id: String,
+    send_stream: Arc<tokio::sync::Mutex<iroh::endpoint::SendStream>>,
+}
+
+/// A chat room that manages multiple participants
+#[derive(Debug)]
+pub struct ChatRoom {
+    /// Connected participants
+    participants: RwLock<Vec<ChatParticipant>>,
+    /// Broadcast channel for messages
+    broadcast_tx: broadcast::Sender<ChatMessage>,
+    /// Authorized keys for chat access
+    authorized_keys: Arc<ChatAuthorizedKeys>,
+}
+
+impl ChatRoom {
+    /// Create a new chat room
+    pub fn new(authorized_keys: ChatAuthorizedKeys) -> Self {
+        let (broadcast_tx, _) = broadcast::channel(100);
+        Self {
+            participants: RwLock::new(Vec::new()),
+            broadcast_tx,
+            authorized_keys: Arc::new(authorized_keys),
+        }
+    }
+
+    /// Add a participant to the room
+    fn add_participant(&self, endpoint_id: String, send_stream: iroh::endpoint::SendStream) {
+        let participant = ChatParticipant {
+            endpoint_id: endpoint_id.clone(),
+            send_stream: Arc::new(tokio::sync::Mutex::new(send_stream)),
+        };
+        let mut participants = self.participants.write().unwrap();
+        participants.push(participant);
+        info!("Chat participant joined: {}", endpoint_id);
+    }
+
+    /// Remove a participant from the room
+    fn remove_participant(&self, endpoint_id: &str) {
+        let mut participants = self.participants.write().unwrap();
+        participants.retain(|p| p.endpoint_id != endpoint_id);
+        info!("Chat participant left: {}", endpoint_id);
+    }
+
+    /// Broadcast a message to all participants except the sender
+    async fn broadcast(&self, message: &ChatMessage) {
+        let participants = self.participants.read().unwrap().clone();
+        let data = match serde_json::to_vec(message) {
+            Ok(d) => d,
+            Err(e) => {
+                error!("Failed to serialize chat message: {}", e);
+                return;
+            }
+        };
+        let len_bytes = (data.len() as u32).to_be_bytes();
+
+        for participant in participants {
+            if participant.endpoint_id == message.sender {
+                continue; // Don't echo back to sender
+            }
+            let send = participant.send_stream.clone();
+            let data = data.clone();
+            let len_bytes = len_bytes;
+            tokio::spawn(async move {
+                let mut send = send.lock().await;
+                if let Err(e) = send.write_all(&len_bytes).await {
+                    debug!("Failed to send chat message length: {}", e);
+                    return;
+                }
+                if let Err(e) = send.write_all(&data).await {
+                    debug!("Failed to send chat message: {}", e);
+                }
+            });
+        }
+
+        // Also send to broadcast channel for local listeners
+        let _ = self.broadcast_tx.send(message.clone());
+    }
+
+    /// Subscribe to chat messages
+    pub fn subscribe(&self) -> broadcast::Receiver<ChatMessage> {
+        self.broadcast_tx.subscribe()
+    }
+
+    /// Broadcast a message from the server to all participants
+    pub async fn server_broadcast(&self, text: String) {
+        let message = ChatMessage {
+            sender: "Server".to_string(),
+            text,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        };
+        self.broadcast(&message).await;
+    }
+}
+
+// Allow ChatParticipant to be cloned (we only clone the Arc handles)
+impl Clone for ChatParticipant {
+    fn clone(&self) -> Self {
+        Self {
+            endpoint_id: self.endpoint_id.clone(),
+            send_stream: self.send_stream.clone(),
+        }
+    }
+}
+
+/// The chat protocol handler
+#[derive(Debug, Clone)]
+pub struct ChatProtocol {
+    /// Shared chat room
+    chat_room: Arc<ChatRoom>,
+}
+
+impl ChatProtocol {
+    /// Create a new chat protocol handler
+    pub fn new(chat_room: Arc<ChatRoom>) -> Self {
+        Self { chat_room }
+    }
+
+    /// Get the chat room
+    pub fn chat_room(&self) -> &Arc<ChatRoom> {
+        &self.chat_room
+    }
+}
+
+impl ProtocolHandler for ChatProtocol {
+    fn accept(
+        &self,
+        connection: Connection,
+    ) -> impl Future<Output = Result<(), AcceptError>> + Send {
+        let chat_room = self.chat_room.clone();
+
+        async move {
+            let remote_endpoint_id = connection.remote_id();
+            let remote_id_str = remote_endpoint_id.to_string();
+
+            info!("Incoming chat connection from: {}", remote_id_str);
+
+            // Check authorization
+            if !chat_room.authorized_keys.is_authorized(&remote_endpoint_id) {
+                warn!("Rejected unauthorized chat connection from: {}", remote_id_str);
+                connection.close(1u32.into(), b"unauthorized");
+                return Err(AcceptError::from_err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Unauthorized chat endpoint: {}", remote_id_str),
+                )));
+            }
+
+            info!("Authorized chat connection from: {}", remote_id_str);
+
+            // Accept a bidirectional stream for chat
+            let (send, mut recv) = match connection.accept_bi().await {
+                Ok(streams) => streams,
+                Err(e) => {
+                    debug!("Failed to accept chat stream: {}", e);
+                    return Err(AcceptError::from_err(e));
+                }
+            };
+
+            // Add participant to room
+            chat_room.add_participant(remote_id_str.clone(), send);
+
+            // Read messages from this participant
+            loop {
+                match read_chat_message(&mut recv).await {
+                    Ok(mut message) => {
+                        // Ensure sender field matches the connection
+                        message.sender = remote_id_str.clone();
+                        info!("Chat message from {}: {}", remote_id_str, message.text);
+                        chat_room.broadcast(&message).await;
+                    }
+                    Err(e) => {
+                        debug!("Chat stream from {} ended: {}", remote_id_str, e);
+                        break;
+                    }
+                }
+            }
+
+            // Remove participant when done
+            chat_room.remove_participant(&remote_id_str);
+
+            Ok(())
+        }
+    }
+}
+
+/// Read a chat message from the stream
+pub async fn read_chat_message(recv: &mut iroh::endpoint::RecvStream) -> Result<ChatMessage> {
+    let mut len_buf = [0u8; 4];
+    recv.read_exact(&mut len_buf)
+        .await
+        .context("Failed to read chat message length")?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+
+    if len > MAX_CHAT_MSG_SIZE {
+        return Err(anyhow!("Chat message too large: {} bytes", len));
+    }
+
+    let mut buf = vec![0u8; len];
+    recv.read_exact(&mut buf)
+        .await
+        .context("Failed to read chat message body")?;
+
+    let message: ChatMessage =
+        serde_json::from_slice(&buf).context("Failed to parse chat message")?;
+
+    Ok(message)
+}
+
+/// Send a chat message on the stream
+pub async fn send_chat_message(
+    send: &mut iroh::endpoint::SendStream,
+    message: &ChatMessage,
+) -> Result<()> {
+    let data = serde_json::to_vec(message)?;
     let len = data.len() as u32;
 
     send.write_all(&len.to_be_bytes()).await?;

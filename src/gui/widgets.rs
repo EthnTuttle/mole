@@ -16,8 +16,7 @@ pub fn status_indicator(ui: &mut Ui, status: &ConnectionStatus) {
     ui.horizontal(|ui| {
         // Colored dot
         let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-        ui.painter()
-            .circle_filled(rect.center(), 5.0, color);
+        ui.painter().circle_filled(rect.center(), 5.0, color);
         ui.label(text);
     });
 }
@@ -47,7 +46,11 @@ pub fn log_entry(ui: &mut Ui, entry: &LogEntry) {
     };
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new(&entry.timestamp).color(Color32::DARK_GRAY).monospace());
+        ui.label(
+            RichText::new(&entry.timestamp)
+                .color(Color32::DARK_GRAY)
+                .monospace(),
+        );
         ui.label(RichText::new(prefix).color(color).monospace());
         ui.label(RichText::new(&entry.message).monospace());
     });
@@ -80,13 +83,29 @@ pub fn tunnel_config_row(
 ) -> bool {
     let mut remove = false;
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(name).hint_text("name").desired_width(80.0));
+        ui.add(
+            egui::TextEdit::singleline(name)
+                .hint_text("name")
+                .desired_width(80.0),
+        );
         ui.label(":");
-        ui.add(egui::TextEdit::singleline(host).hint_text("host").desired_width(100.0));
+        ui.add(
+            egui::TextEdit::singleline(host)
+                .hint_text("host")
+                .desired_width(100.0),
+        );
         ui.label(":");
-        ui.add(egui::TextEdit::singleline(port).hint_text("port").desired_width(50.0));
+        ui.add(
+            egui::TextEdit::singleline(port)
+                .hint_text("port")
+                .desired_width(50.0),
+        );
         ui.label("->");
-        ui.add(egui::TextEdit::singleline(local_port).hint_text("local").desired_width(50.0));
+        ui.add(
+            egui::TextEdit::singleline(local_port)
+                .hint_text("local")
+                .desired_width(50.0),
+        );
         if ui.button("X").clicked() {
             remove = true;
         }
@@ -116,4 +135,68 @@ pub fn section_header(ui: &mut Ui, text: &str) {
     ui.add_space(8.0);
     ui.label(RichText::new(text).strong().size(14.0));
     ui.separator();
+}
+
+/// Display a QR code for the given data
+pub fn qr_code(ui: &mut Ui, data: &str, scale: f32) {
+    match mole::qr::generate_qr_grid(data) {
+        Ok(grid) => {
+            let size = grid.len();
+            let module_size = scale;
+            let total_size = size as f32 * module_size;
+
+            let (rect, _response) =
+                ui.allocate_exact_size(egui::vec2(total_size, total_size), egui::Sense::hover());
+
+            let painter = ui.painter();
+
+            // Draw white background
+            painter.rect_filled(rect, 0.0, Color32::WHITE);
+
+            // Draw black modules
+            for (y, row) in grid.iter().enumerate() {
+                for (x, &is_dark) in row.iter().enumerate() {
+                    if is_dark {
+                        let module_rect = egui::Rect::from_min_size(
+                            egui::pos2(
+                                rect.min.x + x as f32 * module_size,
+                                rect.min.y + y as f32 * module_size,
+                            ),
+                            egui::vec2(module_size, module_size),
+                        );
+                        painter.rect_filled(module_rect, 0.0, Color32::BLACK);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            ui.colored_label(Color32::RED, format!("QR Error: {}", e));
+        }
+    }
+}
+
+/// Show a QR code popup window
+pub fn show_qr_window(ctx: &egui::Context, open: &mut bool, title: &str, data: &str) {
+    egui::Window::new(title)
+        .open(open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(10.0);
+                qr_code(ui, data, 4.0);
+                ui.add_space(10.0);
+                ui.label("Scan with Mole Android app");
+                ui.add_space(5.0);
+                ui.label(RichText::new(data).monospace().small());
+                ui.add_space(5.0);
+                if ui.button("Copy to Clipboard").clicked() {
+                    #[cfg(feature = "gui")]
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(data);
+                    }
+                }
+            });
+        });
 }

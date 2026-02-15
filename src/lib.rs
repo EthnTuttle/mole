@@ -5,4 +5,5 @@
 //! on remote machines without exposing ports to the public internet.
 
 pub mod protocol;
+pub mod qr;
 pub mod security;

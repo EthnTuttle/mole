@@ -49,6 +49,9 @@ rand = "0.8"
 # File system
 dirs = "6"
 
+# QR code generation
+qrcode = "0.14"
+
 # GUI (optional)
 eframe = { version = "0.31", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = { version = "0.31", optional = true }
